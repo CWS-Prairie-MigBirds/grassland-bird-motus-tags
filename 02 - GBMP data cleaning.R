@@ -210,6 +210,7 @@ for(i in 1:length(SPPItags)){
           labs(title = paste(SPPItags[i], "SPPI", sep = "-")))
   readline(prompt = 'Press return/enter to continue')}
 
+table(SPPI$tagDepYear)
 # detections to verify for SPPI:
 
 # 67509 has what appears to be some noise - st-jean-baptiste? passes the noisy tower filter but its in Quebec...
@@ -277,6 +278,14 @@ for(i in 1:length(CCLOtags)){
           geom_point(aes(size = runLen, color = recvDeployName)) +
           labs(title = paste(CCLOtags[i], "CCLO", sep = "-")))
   readline(prompt = 'Press return/enter to continue')}
+
+ggplot(data = filter(df.alltags.912.clean, 
+                     motusTagID == 67388), 
+       aes(x = ts, y = recvDeployLat)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + 
+  geom_point(aes(size = runLen, color = recvDeployName)) +
+  labs(title = paste(67388, "CCLO", sep = "-"))
 
 # sketchy detections to look into:
 
@@ -388,7 +397,7 @@ df.alltags.912.clean <- df.alltags.912.clean |>
   maxRecvLon = case_when(
     speciesEN == "Baird's Sparrow" ~ as.numeric("-90"),
     speciesEN == "Chestnut-collared Longspur" ~ as.numeric("-92"),
-    speciesEN == "Horned Lark" ~ as.numeric("-70"),
+    speciesEN == "Horned Lark" ~ as.numeric("-87"), # technically, HOLA range extends further east, but this just removed a FL detection that seemed unlikely anyways
     speciesEN == "Thick-billed Longspur" ~ as.numeric("-100"),
     speciesEN == "Sprague's Pipit" ~ as.numeric("-90"),
     speciesEN == "Grasshopper Sparrow" ~ as.numeric("-60"),
@@ -425,15 +434,16 @@ df.alltags.912.clean <- df.alltags.912.clean |>
 
 #### 14 - removing individual tags, detections with strange freq and freqsd ####
 
-tagsToRemove <- c(67505)
+tagsToRemove <- c(67505, 75839)
 # 67505 looks like it was dropped near the Battlecreek receiver - detections are pretty well continuous at the same receiver for extended periods of time
+# 75839-HOLA does look like it was dropped in mid-late august, hence the detections at Govenlock until December
 
 droppedTags <- df.alltags.912.clean |>
-  filter(motusTagID == 67505) |>
+  filter(motusTagID %in% c(67505, 75839)) |>
   mutate(reasonRemoved = "droppedTag")
 
 df.alltags.912.clean <- df.alltags.912.clean |>
-  filter(!motusTagID == 67505)
+  filter(!motusTagID %in% c(67505, 75839))
 
 # and some towers have very odd freq and freqsd - they'll be perfectly even numbers and the freqsd is exactly zero. that combination never happens at any receiver that I trust (sometimes freqsd will be zero but freq should always have some decimals)
 weirdTowers <- df.alltags.912.clean |>
@@ -602,19 +612,19 @@ noTagData <- readRDS("postDepDets_missingTagInfo.2025Jan15.rds")
 dups <- readRDS("duplicateDataRemoved.2025Jan20.rds")
 noRecvLatLon <- readRDS("noRecvInfo.2025Jan20.rds")
 noisyTowers <- readRDS("noisyTowerHits.2025Jan20.rds")
-range <- readRDS("hitsOutOfRange.2025Jan20.rds")
-droppedTag <- readRDS("droppedTag.2025Jan20.rds")
-weirdRecv <- readRDS("weirdRecv.2025Jan20.rds")
-shortRunsNoisyRecv <- readRDS("shortRunsNoisyRecv.2025Jan20.rds")
+range <- readRDS("hitsOutOfRange.2025Feb11.rds")
+droppedTag <- readRDS("droppedTag.2025Feb11.rds")
+weirdRecv <- readRDS("weirdRecv.2025Feb11.rds")
+shortRunsNoisyRecv <- readRDS("shortRunsNoisyRecv.2025Feb11.rds")
 flightSpeed <- readRDS("flightSpeedHitsRemoved.2025Jan20.rds")
 
 allHitsRemoved <- shortRuns |>
   bind_rows(undeployedTags, dets2021, preDepDets, noTagData, dups, noRecvLatLon, noisyTowers, range, droppedTag, weirdRecv, shortRunsNoisyRecv,flightSpeed)
 
-saveRDS(allHitsRemoved, "allHitsRemoved.2025Jan25.rds")
+saveRDS(allHitsRemoved, "allHitsRemoved.2025Feb11.rds")
 
 # and then can upload to OSF - note that if the file already exists there (if it's one of the ones I uploaded there), you may have to specify conflict = "rename" to upload. I just put the upload option here in case you want it. 
-local_files <- c("noisyTowerHits.2025Jan20.rds", "hitsOutOfRange.2025Jan20.rds", "droppedTag.2025Jan20.rds",  "weirdRecv.2025Jan20.rds", "shortRunsNoisyRecv.2025Jan20.rds", "flightSpeedHitsRemoved.2025Jan20.rds", "allHitsRemoved.2025Jan21.rds")
+local_files <- c("noisyTowerHits.2025Jan20.rds", "hitsOutOfRange.2025Feb11.rds", "droppedTag.2025Feb11.rds",  "weirdRecv.2025Feb11.rds", "shortRunsNoisyRecv.2025Feb11.rds", "flightSpeedHitsRemoved.2025Jan20.rds", "allHitsRemoved.2025Feb11.rds")
 
 # Upload the file to the project (path argument specifies folder in the project, leaving blank uploads it to the main directory)
 osf_upload(project, local_files)
@@ -660,14 +670,7 @@ summary_df <- summary_df |>
 print(summary_df)
 # this table shows the total # unfiltered detections in the top row, the number removed with each filtering step, and the remaining detections after each step. I've also provided an Excel version of this table on GitHub
 
-
-
-
-
-
-
-
-
+saveRDS(summary_df, "tableOfHitsRemoved.2025Feb11.rds")
 
 
 
