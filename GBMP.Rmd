@@ -1,0 +1,1272 @@
+---
+title: "Grassland Bird Monitoring Project - Motus Data Analyses"
+subtitle: "ECCC contract no. 3000792304, deliverable 2"
+author: "Sarah Endenburg"
+output: 
+  html_document: 
+    self_contained: true
+    theme: yeti  
+    toc: true
+    toc_float: true
+    smooth_scroll: yes
+    toc_depth: 4
+    code_folding: hide
+date: "2025-02-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(motus)
+library(tidyverse)
+library(lubridate)
+library(ggforce)
+library(stringr)
+library(rnaturalearth)
+library(geosphere)
+library(ggrepel)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(gridExtra)
+library(sf)
+
+Sys.setenv(tz = "UTC")
+
+options(scipen = 9999)
+
+```
+
+# Introduction
+
+This report presents preliminary analyses of Motus automated radio telemetry data collected for the Grassland Bird Monitoring Project (GBMP). The overarching goals of the GBMP are to monitor trends in the health and status of grassland bird populations and identify potential causes of decline to inform future conservation and management of the habitats and regions these species occupy. For migratory bird species, understanding departure dates, stopover ecology, and migratory connectivity are all crucial for informing effective habitat management where it is needed across species’ ranges
+
+The data in this report are for six grassland songbird species: Chestnut-collared longspur (*Calcarius ornatus*), Thick-billed longspur (*Rhyncophanes mccownii*), Sprague's pipit (*Anthus spragueii*), Horned lark (*Eremophila alpestris*), Baird's Sparrow (*Centronyx bairdii*), and Grasshopper sparrow (*Ammodramus savannarum*). 
+
+This report was generated in R version `r getRversion()`.
+
+# Motus data cleaning summary
+
+Table 1. Summary of GBMP Motus detections removed during the filtering process.
+```{r table of detections filtered out, echo = FALSE, message = FALSE, warning = FALSE}
+
+hitsRemovedTable <- readRDS("tableOfHitsRemoved.2025Feb11.rds")
+rownames(hitsRemovedTable) <- c("Total number of hits", "Short runs", "Undeployed tags", "2021 detections", 
+                                "Pre-deployment detections", "Missing tag metadata", "Duplicate rows", 
+                                "Missing receiver metadata", "Noisy tower", "Outside species range", 
+                                "Dropped tag", "Weird tower", "Short runs at noisy receivers", 
+                                "Impossible flight speed")
+
+hitsRemovedTable <- hitsRemovedTable |>
+  select(-reasonRemoved)
+
+kable(hitsRemovedTable, 
+      format = "html",
+      table.attr = "style='width:80%;'",
+      col.names = c("Reason removed", "Number of detections removed", "Number of detections remaining"),
+      ) %>% 
+  kable_styling(position='left') 
+
+
+```
+
+# Tag deployment and detection summaries
+
+Tags were deployed in 2022, 2023 and 2024 at the following sites:
+
+```{r tag deployment site map, fig.cap="Figure 1. GBMP tag deployment locations for 2022, 2023 & 2024.", echo = FALSE, message = FALSE, warning = FALSE, results = 'hide', fig.align='left'}
+
+tags912 <- read_csv("MotusTagsTemplate-912.csv")
+
+tags912 <- tags912 |>
+  mutate(speciesEN = case_when(
+    speciesName == "Centronyx bairdii" ~ "Baird's Sparrow",
+    speciesName == "Calcarius ornatus" ~ "Chestnut-collared Longspur",
+    speciesName == "Eremophila alpestris" ~ "Horned Lark",
+    speciesName == "Anthus spragueii" ~ "Sprague's Pipit",
+    speciesName == "Ammodramus savannarum" ~ "Grasshopper Sparrow",
+    speciesName == "Rhynchophanes mccownii" ~ "Thick-billed Longspur",
+    TRUE ~ "NA"
+  )) |>
+  rename(motusTagID = tagID)
+
+tagDepSites <- tags912 |>
+  ungroup() |>
+  mutate(tagDepLat = round(decimalLatitude, digits = 0),
+         tagDepLon = round(decimalLongitude, digits = 0)) |>
+  select(tagDepLat, tagDepLon, speciesEN, motusTagID) |>
+  filter(is.na(tagDepLat) == FALSE) |>
+  group_by(speciesEN, tagDepLat, tagDepLon) |>
+  summarize(nTags = n_distinct(motusTagID))
+
+world <- suppressMessages(ne_countries(scale = "medium", returnclass = "sf"))
+
+states_Can <- suppressMessages(ne_states(country = c("canada"), returnclass = "sf"))
+
+lakes <- suppressMessages(ne_download(scale = "large", type = 'lakes', category = 'physical',
+returnclass = "sf", destdir = "mapData"))
+
+xmax <- -90
+xmin <- -120
+ymax <- 60
+ymin <- 45
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = lakes, fill = "lightblue3", colour = "gray44") +
+  geom_sf(data = states_Can, colour = "gray44")+
+  geom_sf(data = world, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  labs(x = "", y = "") +
+  geom_jitter(data = tagDepSites, aes(x = tagDepLon, y = tagDepLat, fill = as.factor(speciesEN)), colour = "black", shape = 21, size = 2)+
+  geom_text(data = states_Can, aes(label = postal, x = longitude, y = latitude), size = 3)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "lightblue3")) +
+  facet_wrap(~speciesEN) +
+  theme(legend.position = "none") +
+  scale_x_continuous(
+    breaks = c(-115, -110, -105, -100, -95),  # Manually specify the breaks (in degrees)
+    labels = c("115°W", "110°W", "105°W", "100°W", "95°W")  # Custom labels for the breaks
+  ) +
+  scale_y_continuous(
+    breaks = c(46, 50, 54, 58)
+  ) +
+  # Rotate x-axis labels
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e"))
+
+```
+
+## Tag deployment and detection summaries, by species and year
+
+Let's get an idea of how many tags were deployed, by year and species, and how many of those were subsequently detected by the Motus network. These data have been filtered to remove detections that are likely to be false.
+
+
+
+Table 2. Number of GBMP Motus tags deployed and detected, by species and year. 'Detections' refer to individual bursts from a tag, and the number of days detected was calculated as the number of days between deployment and the last detection for that tag.
+```{r Read in Motus detections data, class.source = "fold-show", echo = FALSE, message = FALSE, fig.align='left'}
+df.alltags.912.clean <- readRDS("df.alltags.912.clean.2025Feb11.rds")
+
+df.alltags.912.clean <- df.alltags.912.clean |>
+  group_by(motusTagID) |>
+  mutate(numDaysDetected = as.numeric(difftime(max(ts), min(ts), units = "days")),
+         nHits = n(),
+         nRecv = n_distinct(recvDeployName))
+
+detections_by_Species_Year <- df.alltags.912.clean |>
+  select(speciesEN, tagDepYear, motusTagID, nHits, numDaysDetected, nRecv) |>
+  distinct() |>
+  ungroup() |>
+  group_by(tagDepYear, speciesEN) |>
+  summarise(nTagsDetected = n_distinct(motusTagID),
+            nHitsAllTags = sum(nHits),
+            avgHitsPerTag = nHitsAllTags/nTagsDetected,
+            avgHitsPerTag_SD = sd(nHits, na.rm = TRUE),
+            avgDaysDetected = mean(numDaysDetected),
+            avgDaysDetected_SD = sd(numDaysDetected, na.rm = TRUE),
+            meanNRecv = mean(nRecv),
+            nRecv_sd = sd(nRecv),
+            .groups = 'drop') |>
+  arrange(speciesEN, tagDepYear) |>
+  mutate(
+    avgHitsPerTag = paste0(round(avgHitsPerTag, 2), " ± ", round(avgHitsPerTag_SD, 2)),  # Combine mean and SD
+    avgDaysDetected = paste0(round(avgDaysDetected, 2), " ± ", round(avgDaysDetected_SD, 2)),  # Combine mean and SD
+    meanNRecv = paste0(round(meanNRecv, 2), " ± ", round(nRecv_sd, 2))
+  ) |>
+  select(-avgHitsPerTag_SD, -avgDaysDetected_SD, -nRecv_sd)
+
+# adding in number of tags deployed per year and species, to compare with number detected
+
+tagDeps <- tags912 |>
+  filter(is.na(utcYearStart) == FALSE) |>
+  rename(tagDepYear = utcYearStart) |>
+  group_by(tagDepYear, speciesEN) |>
+  summarise(nTagsDeployed = n())
+
+depTags912 <- tags912 |>
+  filter(is.na(utcYearStart) == FALSE)
+
+detections_by_Species_Year <- detections_by_Species_Year |>
+  left_join(tagDeps, by = c("tagDepYear", "speciesEN")) |>
+  mutate(percentTagsDetected = (nTagsDetected/nTagsDeployed)*100) |>
+  select(tagDepYear, speciesEN, nTagsDeployed, nTagsDetected, percentTagsDetected, nHitsAllTags, avgHitsPerTag, avgDaysDetected, meanNRecv) |>
+ mutate(across(where(is.numeric), ~ round(., 1))) |>
+  arrange(speciesEN, tagDepYear) |>
+  mutate(speciesEN = as.factor(speciesEN))
+
+species_vector <- detections_by_Species_Year$speciesEN
+
+kable(detections_by_Species_Year, 
+      format = "html",
+      table.attr = "style='width:100%;'",
+      col.names = c("Year", "Species", "Number of tags deployed", "Number of tags detected", "Percent tags detected", "Total number of detections", "Average number of detections per tag", "Average number of days detected", "Number of receivers with detections")
+) %>% 
+  kable_styling(position='left') 
+```
+
+Note that there are other confounding factors that likely contributed to the number of detections, including tag type.
+
+## Detections by tag type
+
+Five types of tags were deployed for the GBMP:
+
+
+Table 3. GBMP tag types by species.
+```{r table of tag types, echo = FALSE, message = FALSE, fig.align='left'}
+
+tags <- read_csv("tags.csv")
+
+tagTypes <- tags |>
+  select(tagID, model, motusScientificName) |>
+  mutate(speciesEN = case_when(
+    motusScientificName == "Calcarius ornatus" ~ "Chestnut-collared Longspur",
+    motusScientificName == "Anthus spragueii" ~ "Sprague's Pipit",
+    motusScientificName == "Rhynchophanes mccownii" ~ "Thick-billed Longspur",
+    motusScientificName == "Eremophila alpestris" ~ "Horned Lark", 
+    motusScientificName == "Centronyx bairdii" ~ "Baird's Sparrow",
+    motusScientificName == "Ammodramus savannarum" ~ "Grasshopper Sparrow",
+    TRUE ~ "NA")) |>
+  select(-motusScientificName) |>
+  rename(motusTagID = tagID,
+         tagModel = model) |>
+  filter(motusTagID %in% depTags912$motusTagID)|>
+  group_by(tagModel) |>
+  summarise(nTags = n_distinct(motusTagID),
+            HOLA = sum(speciesEN == "Horned Lark"),
+            CCLO = sum(speciesEN == "Chestnut-collared Longspur"),
+            SSPI = sum(speciesEN == "Sprague's Pipit"),
+            BAIS = sum(speciesEN == "Baird's Sparrow"),
+            GRSP = sum(speciesEN == "Grasshopper Sparrow"),
+            TBLO = sum(speciesEN == "Thick-billed Longspur")) |>
+  mutate(tagManufacturer = case_when(
+    tagModel %in% c("LifeTag", "HybridTag") ~ "CTT",
+    TRUE ~ "Lotek"
+  )) |>
+  select(tagManufacturer, tagModel, nTags, BAIS, CCLO, GRSP, HOLA, SSPI, TBLO)
+
+df_total <- tagTypes %>%
+  summarise(
+    tagModel = "Total",  # Label for the total row
+    nTags = sum(nTags),
+    BAIS = sum(BAIS),
+    CCLO = sum(CCLO),
+    GRSP = sum(GRSP),
+    HOLA = sum(HOLA),
+    SSPI = sum(SSPI),
+    TBLO = sum(TBLO)
+  )
+
+tagTypes_with_total <- bind_rows(tagTypes, df_total) |>
+  mutate(across(1, ~ if_else(is.na(.), "", .)))  
+
+kable(tagTypes_with_total, 
+      format = "html",
+      table.attr = "style='width:80%;'",
+      col.names = c("Manufacturer", "Tag model", "Total number of tags", "Baird's Sparrow", "Chestnut-collared Longspur", "Grasshopper Sparrow", "Horned Lark", "Sprague's Pipit", "Thick-billed Longspur")
+) %>% 
+  kable_styling(position='left') |>
+  row_spec(nrow(tagTypes_with_total), bold = TRUE) %>%
+  # Optionally, add other styling for borders or layout adjustments
+  row_spec(nrow(tagTypes_with_total), extra_css = "border-bottom: 2px solid #e0e0e0;") |>
+  row_spec(nrow(tagTypes_with_total) -1, extra_css = "border-bottom: 2px solid #e0e0e0;")
+
+```
+
+
+CTT LifeTags are solar-powered, whereas the HybridTags use a combination of battery and solar power. Lotek tags are all battery-operated but the different models have different battery sizes (and therefore, expected lifetimes).
+
+Did the number of detections differ by tag type?
+
+
+Table 4. Detections by tag model. There were no detections for any of the four Lotek NTQB2-3-2-M tags.
+```{r table of detections by tag type, echo = FALSE, message = FALSE, fig.align='left'}
+
+detections_by_tagModel <- df.alltags.912.clean |>
+  ungroup() |>
+  group_by(tagModel) |>
+  summarise(nTagsDetected = n_distinct(motusTagID),
+            nHits = n(),
+            avgHitsPerTag = nHits/nTagsDetected,
+            avgDaysDetected = mean(numDaysDetected),
+            nRecv = n_distinct(recvDeployName),
+            .groups = 'drop')
+
+tagModels <- tags |>
+  select(tagID, model) |>
+  rename(motusTagID = tagID,
+         tagModel = model) |>
+  filter(motusTagID %in% depTags912$motusTagID)
+
+depTagModels <- tagModels |>
+  group_by(tagModel) |>
+  summarise(nTagsDeployed = n())
+
+detections_by_tagModel <- detections_by_tagModel |>
+  left_join(depTagModels, by = "tagModel") |>
+  select(tagModel, nTagsDeployed, nTagsDetected, nHits, avgHitsPerTag, avgDaysDetected, nRecv) |>
+  mutate(percentTagsDetected = (nTagsDetected/nTagsDeployed)*100) |>
+  select(tagModel, nTagsDeployed, nTagsDetected, percentTagsDetected, nHits, avgHitsPerTag, avgDaysDetected, nRecv) |>
+  mutate(across(where(is.numeric), ~ round(., 1)))
+
+kable(detections_by_tagModel,
+      format = "html",
+      table.attr = "style='width:100%;'",
+      col.names = c("Tag model", "Number of tags deployed", "Number of tags detected", "Percent tags detected", "Total number of detections", "Average number of detections per tag", "Average number of days detected per tag", "Number of receivers with detections")
+) %>% 
+  kable_styling(position='left') 
+
+```
+
+## Detections vs. distance between tag deployment locations and closest receivers
+The distance between tag deployment locations and receiver locations may also have impacted the number of detections because receivers have limited detection distances. The typical maximum detection distance for a Yagi antenna is about 15km, although the actual detection distance depends on factors including local topography and vegetation. For these analyses, I used the distance to the closest receiver that was active by July 31 of the year each tag was deployed rather than only looking at receivers that were active on specific tag deployment dates. Some receivers were set up near tagging locations within a few weeks of tag deployment, so using the exact deployment dates yielded some misleading results.
+
+```{r prep code for figures for # detections vs. deployment distance from tower, echo = FALSE, message = FALSE}
+
+depTags912 <- depTags912 |>
+  select(motusTagID, mfgID, period, utcYearStart, utcMonthStart, utcDayStart, utcHourStart, utcMinuteStart, decimalLatitude, decimalLongitude) |>
+  mutate(tagDeployDate = make_datetime(
+    utcYearStart,
+    utcMonthStart,
+    utcDayStart
+  )) |>
+  rename(tagBI = period,
+         tagDepLat = decimalLatitude,
+         tagDepLon = decimalLongitude) |>
+  filter(is.na(tagDepLat) == FALSE) # there are two tags with no deployment lat/long, waiting for those from Nancy
+
+allRecv <- read_csv("receiver-deployments.csv")
+
+allRecv$dtStart <- as.POSIXct(allRecv$dtStart)
+allRecv$dtEnd <- as.POSIXct(allRecv$dtEnd)
+
+activeRecv <- allRecv |>
+  filter((dtEnd > "2022-06-01 00:00:00 UTC" | is.na(dtEnd)) & dtStart < "2024-12-01 00:00:00 UTC") |>
+  rename(recvDeployName = deploymentName,
+         recvDeployLat = latitude,
+         recvDeployLon = longitude)
+
+
+allRecv <- allRecv |>
+  rename(recvDeployName = deploymentName,
+         recvDeployLat = latitude,
+         recvDeployLon = longitude)
+
+activeRecv <- allRecv |>
+  filter((dtEnd > "2022-06-01 00:00:00 UTC" | is.na(dtEnd)) & dtStart < "2024-12-01 00:00:00 UTC") 
+# didn't have the option of an NA end date in there before, need to fix that in 4a
+
+get_active_receivers <- function(tagDeployDate) {
+  
+  tagDepYear <- format(tagDeployDate, "%Y")
+  tagDepMonth <- format(tagDeployDate, "%m")
+  
+  end_of_july <- as.Date(paste(tagDepYear, "07", "31", sep = "-"))
+  
+  active_receivers <- activeRecv %>% # have to have recvDeployName in there, it's not in allRecv
+    filter(dtStart <= end_of_july & (dtEnd >= end_of_july | is.na(dtEnd))) %>% # recv that are still active have an NA for their end date!
+    select(recvDeployName, recvDeployLat, recvDeployLon, dtStart, dtEnd)
+  return(active_receivers)
+}
+
+# Step 2: Calculate the distance between tag deployments and active receivers
+# A function to calculate the closest receiver using the Haversine formula
+
+calculate_closest_receiver <- function(tag_row) {
+  
+  # Get the active receivers at the time of tag deployment
+  active_receivers <- get_active_receivers(tag_row$tagDeployDate)
+  
+  # Calculate distances to all active receivers
+  distances <- distVincentyEllipsoid(cbind(active_receivers$recvDeployLon, active_receivers$recvDeployLat),
+                                     c(tag_row$tagDepLon, tag_row$tagDepLat))
+  
+  # Find the closest receiver
+  closest_idx <- which.min(distances)
+  
+  # Return the closest receiver information
+  return(data.frame(tag_id = tag_row$motusTagID, 
+                    closest_receiver = active_receivers$recvDeployName[closest_idx],
+                    distance_km = distances[closest_idx] / 1000))  # convert meters to km
+}
+
+closest_receivers <- do.call(rbind, lapply(1:nrow(depTags912), function(i) {
+  tag_row <- depTags912[i, ] # get the current tag's row
+  calculate_closest_receiver(tag_row) # pass the tag row to the function
+}))
+
+# Combine the results
+
+closest_receivers <- closest_receivers |>
+  rename(motusTagID = tag_id,
+         distToClosestRecv = distance_km)
+
+detections_deploy_dist_from_recv <- df.alltags.912.clean |>
+  ungroup() |>
+  group_by(speciesEN, tagModel, motusTagID) |>
+  summarise(nHits = n(),
+            numDaysDetected = mean(numDaysDetected),
+            nRecv = n_distinct(recvDeployName),
+            .groups = 'drop')
+
+detections_deploy_dist_from_recv <- detections_deploy_dist_from_recv |>
+  left_join(closest_receivers, by = "motusTagID")
+
+tagBrands <- tags |>
+  select(tagID, manufacturer) |>
+  rename(motusTagID = tagID,
+         tagBrand = manufacturer)
+
+detections_deploy_dist_from_recv <- detections_deploy_dist_from_recv |>
+  left_join(tagBrands, by = "motusTagID")
+
+```
+
+```{r figure for recv distance to tag dep site vs nHits, fig.cap="Figure 2. Number of detections per tag as a function of the distance (km) from tag deployment site to the closest active receiver.", fig.align='left', fig.width=10, fig.height=6}
+ggplot(detections_deploy_dist_from_recv) +
+  geom_point(aes(x = distToClosestRecv, y = nHits, fill = as.factor(speciesEN), shape = as.factor(tagBrand)), size = 4, alpha = 0.5, colour = "black", position = position_jitter(width = 0.2, height = 0.2)) +
+  theme_classic() +
+  labs(x = "Distance from tag deployment site to closest active receiver (km)", y = "Number of detections", shape = "Tag Brand") +
+  facet_wrap(~speciesEN, scales = "free_y") + 
+  scale_shape_manual(values = c(21, 24)) +
+  theme(axis.title.x = element_text(size = 11), 
+    axis.title.y = element_text(size = 11),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)) +
+  guides(fill = "none") +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e"))
+
+```
+
+```{r figure for recv distance to tag dep site vs nRecv with detections, fig.cap="Figure 3. Number of receivers with detections per tag as a function of the distance (km) from tag deployment site to the closest active receiver.", fig.align='left', fig.width=10, fig.height=6}
+ggplot(detections_deploy_dist_from_recv) +
+  geom_point(aes(x = distToClosestRecv, y = nRecv, fill = speciesEN, shape = as.factor(tagBrand)), size = 4, alpha = 0.5, colour = "black", position = position_jitter(width = 0.2, height = 0.2)) +
+  theme_classic() +
+  labs(x = "Distance from tag deployment site to closest active receiver (km)", y = "Number of receivers with detections", shape = "Tag Brand") +
+  facet_wrap(~speciesEN, scales = "free_y") + 
+  scale_shape_manual(values = c(21, 24)) +
+  theme(axis.title.x = element_text(size = 11), 
+    axis.title.y = element_text(size = 11),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)) +
+  guides(fill = "none") +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e"))
+
+```
+
+# Departure dates
+
+## Fall departure dates
+
+It is tricky to determine migratory departure dates using Motus data because there can be long gaps in between detections, and tag loss/mortality can look just like a migratory departure if the bird is not detected again post-departure. Furthermore, the six species tagged for the GBMP seemed to around on the breeding grounds before actually leaving on migration, sometimes up to ~150km. 
+
+I calculated fall departure dates as the last detection for each bird within 100km of the tagging location, and then classified those dates based on how confident I am that each one represents an actual migratory departure. I based this on the expected timing of departure (from Birds of the World and literature) as well as the amount of time between the apparent departure and the next detection (or if the bird was detected at all post-departure):
+
+**Likely migratory departure**: the departure date was in August, September or October and the individual was detected again moving south within 2 weeks post-departure
+
+**Migratory departure or regional movement**: the departure date was in August, September or October but there were more than 2 weeks between the departure and the next detection
+
+**Possible migratory departure**: the departure date was in August, September or October but the individual was not detected again post-departure, so this may also represent tag loss/malfunction
+
+**Regional movement**: the departure date was in June or July, but the bird was detected later on so we know the tag was not lost/malfunctioning
+
+**Probable tag loss**: the departure date was in June or July and the bird was NOT detected again
+
+```{r fall departure dates, echo = FALSE, warning = FALSE, message = FALSE}
+
+df.alltags.912.clean <- df.alltags.912.clean |> 
+  ungroup() |>
+  mutate(distFromTagSiteM = distVincentyEllipsoid(df.alltags.912.clean[,c("recvDeployLon", "recvDeployLat")],
+                                                  df.alltags.912.clean[,c("tagDepLon", "tagDepLat")]),
+         distFromTagSiteKM = distFromTagSiteM/1000,
+         bandingCode = case_when(
+           speciesEN == "Horned Lark" ~ "HOLA",
+           speciesEN == "Chestnut-collared Longspur" ~ "CCLO",
+           speciesEN == "Sprague's Pipit" ~ "SPPI",
+           speciesEN == "Baird's Sparrow" ~ "BAIS",
+           speciesEN == "Thick-billed Longspur" ~ "TBLO",
+           speciesEN == "Grasshopper Sparrow" ~ "GRSP",
+           TRUE ~ "NA"))
+
+fallDepDates100km <- df.alltags.912.clean |>
+  filter(distFromTagSiteKM <= 100 & tagDepYear == year & numDaysDetected > 1) |>
+  group_by(motusTagID, speciesEN, bandingCode, tagDepYear, tagDepLat, tagDepLon, numDaysDetected) |>
+  summarize(depDate100km = max(ts)) |>
+  arrange(speciesEN, tagDepYear)
+
+fallDepDates150km <- df.alltags.912.clean |>
+  filter(distFromTagSiteKM <= 150 & tagDepYear == year & numDaysDetected > 1) |>
+  group_by(motusTagID, speciesEN, bandingCode, tagDepYear, tagDepLat, tagDepLon, numDaysDetected) |>
+  summarize(depDate150km = max(ts)) |>
+  arrange(speciesEN, tagDepYear)
+
+fallDepDates200km <- df.alltags.912.clean |>
+  filter(distFromTagSiteKM <= 200 & tagDepYear == year & numDaysDetected > 1) |>
+  group_by(motusTagID, speciesEN, bandingCode, tagDepYear, tagDepLat, tagDepLon, numDaysDetected) |>
+  summarize(depDate200km = max(ts)) |>
+  arrange(speciesEN, tagDepYear)
+
+deps100 <- fallDepDates100km |>
+  ungroup()|>
+  select(motusTagID, depDate100km)
+
+deps150 <- fallDepDates150km |>
+  ungroup()|>
+  select(motusTagID, depDate150km)
+
+deps200 <- fallDepDates200km |>
+  ungroup() |>
+  select(motusTagID, depDate200km, speciesEN)
+
+allDepDates <- deps200 |>
+  left_join(deps150, by = "motusTagID") |>
+  left_join(deps100, by = "motusTagID") |>
+  select(motusTagID, speciesEN, depDate100km, depDate150km, depDate200km) |>
+  arrange(speciesEN, depDate150km)
+
+df.alltags.912.clean <- df.alltags.912.clean |>
+  left_join(deps100, by = "motusTagID") 
+
+df.alltags.912.clean <- df.alltags.912.clean |>
+  left_join(deps150, by = "motusTagID")
+
+df.alltags.912.clean <- df.alltags.912.clean |>
+  left_join(deps200, by = "motusTagID") |>
+  select(-speciesEN.y) |>
+  rename(speciesEN = speciesEN.x)
+
+# going to look at departures along with the next detection for each individual that has migratory detections
+df_sorted <- df.alltags.912.clean %>%
+  filter(!is.na(depDate100km) & ts >= depDate100km) |>
+  arrange(motusTagID, recvDeployName, ts)
+
+# pulling just the first post-departure detection
+df_next_detection <- df_sorted |>
+  filter(ts > depDate100km) |>
+  group_by(motusTagID) |>
+  arrange(ts) |>
+  slice_head(n = 1)
+
+# and just the departures themselves
+df_deps <- df_sorted |>
+  filter(ts == depDate100km)
+
+# binding together
+df_deps_next_det <- df_deps |>
+  bind_rows(df_next_detection) |>
+  select(motusTagID, speciesEN, ts, depDate100km, recvDeployName, recvDeployLat, distBtwRecvKM, timeD, numDaysDetected, tagDepYear) |>
+  mutate(depMonth100 = month(depDate100km))|>
+  arrange(speciesEN, motusTagID, depDate100km, ts)
+
+migBirds <- df.alltags.912.clean |>
+  filter(distFromTagSiteKM >100)
+
+newDepDates <- df_deps_next_det |>
+  mutate(typeOfDep = case_when(
+    depMonth100 %in% c(8, 9, 10) & motusTagID %in% migBirds$motusTagID & timeD < 16 ~ "migDep", # departure month is reasonable and bird was detected not too long after departing
+    depMonth100 %in% c(6, 7) & motusTagID %in% migBirds$motusTagID & !is.na(timeD) ~ "regionalMovement", # departure month is super early but they were detected again later on so the tag wasn't lost
+    depMonth100 %in% c(6, 7) & !motusTagID %in% migBirds$motusTagID & is.na(timeD) ~ "possibleTagLoss", # departure month is super early and were not detected again
+    depMonth100 %in% c(8, 9, 10) & motusTagID %in% migBirds$motusTagID & timeD > 16 ~ "migDepOrRegional", # departure month is realistic but the long gap between detections makes me less confident that the date is correct
+    depMonth100 %in% c(8, 9, 10) & !motusTagID %in% migBirds$motusTagID ~ "possibleMigDep", # departure month is reasonable but were not detected again so can't be sure if they were migrating, tag dropped or regional movement
+    TRUE ~ "unknown" # this would be everything else, aka anything with an early departure and that wasn't detected again - tag loss?
+  )) |>
+  group_by(motusTagID) |>
+  filter(ts == max(ts)) |>
+  select(-ts) |> 
+  rename(nextRecv = recvDeployName,
+         nextRecvLat = recvDeployLat, 
+         distToNextRecvKM = distBtwRecvKM,
+         timeToNextRecvDays = timeD) |>
+  mutate(bandingCode = case_when(
+    speciesEN == "Horned Lark" ~ "HOLA",
+    speciesEN == "Chestnut-collared Longspur" ~ "CCLO",
+    speciesEN == "Sprague's Pipit" ~ "SPPI",
+    speciesEN == "Baird's Sparrow" ~ "BAIS",
+    speciesEN == "Thick-billed Longspur" ~ "TBLO",
+    speciesEN == "Grasshopper Sparrow" ~ "GRSP",
+    TRUE ~ "NA"
+  ))
+
+```
+
+The departure dates in the figure below are only those that I classified as a migratory departure or possible migratory departure. 
+
+```{r fall departure date plot, echo = FALSE, warning = FALSE, message = FALSE, fig.cap="Figure 4. Fall departure dates, calculated as the last detection within 100km of the tagging location.", fig.align='left', fig.width=9, fig.height=6}
+# creating a month-day column just for plotting
+newDepDates$Month_Day100 <- format(as.Date(newDepDates$depDate100km), "%m-%d")
+newDepDates$Month_Day100 <- as.Date(newDepDates$Month_Day100, "%m-%d")
+
+ggplot() +
+  geom_boxplot(data = filter(newDepDates, typeOfDep %in% c("migDep", 
+                                                           "possibleMigDep") & speciesEN %in% c("Sprague's Pipit", "Chestnut-collared Longspur")), aes(x = as.factor(tagDepYear), y = Month_Day100, fill = as.factor(speciesEN)), colour = "#505050", outlier.shape = NA, alpha = 0.3) +
+  geom_point(data = filter(newDepDates, typeOfDep %in% c("migDep", 
+                                                         "possibleMigDep")), aes(x = as.factor(tagDepYear), y = Month_Day100, fill = as.factor(speciesEN), shape = as.factor(typeOfDep)), size = 3, position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1), colour = "black") +
+  scale_y_date(date_breaks = "2 weeks", date_labels = "%b %d")+
+  coord_flip()+
+  facet_wrap(~speciesEN) +
+  theme_classic() +
+  scale_colour_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e")) +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e")) +
+  scale_shape_manual(values = c("migDep" = 21, "possibleMigDep" = 24), # Default shapes for each type
+                     labels = c("Migratory departure", "Possible migratory departure")) +  # Custom labels for legend
+  labs(y = "Departure Date", x = "Year") +
+  guides(colour = "none", fill = "none", shape = guide_legend(title = "Type of Departure")) +
+  theme(legend.position = "bottom",   # Place legend at the bottom
+        legend.direction = "horizontal",  # Arrange legend items horizontally
+        legend.justification = c("center", "top"),  # Center the legend horizontally
+        legend.box = "horizontal",  # Ensure the items are in a horizontal box
+        legend.box.margin = margin(t = 10)) +  # Optional: space above the legend +
+  theme(text = element_text(size = 14)) +
+   theme(text = element_text(size = 14),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## Spring departure dates
+
+We don't actually know for sure where the tagged GBMP birds overwintered, so these are more accurately described as the first date that each individual was detected moving north in the spring following tag deployment (one calendar year later than the year of deployment). I could only calculate this for birds with adequate spring migration detections, so some birds that were detected the following spring but only on the breeding grounds do not have spring "departure" dates.
+
+```{r spring departure dates, echo = FALSE, warning = FALSE, message = FALSE}
+
+springDepDates <- df.alltags.912.clean |>
+  filter((year == tagDepYear + 1)) |>
+  group_by(motusTagID, speciesEN) |>
+  filter(recvDeployLat == min(recvDeployLat)) |>
+  filter(ts == max(ts)) |>
+  select(ts, motusTagID, bandingCode, recvDeployLat, recvDeployName) |>
+  filter(recvDeployLat < 49) |>
+  arrange(speciesEN, recvDeployLat)
+
+```
+
+```{r spring departure date plot, echo = FALSE, warning = FALSE, message = FALSE, fig.cap="Figure 5. Spring departure dates, calculated as the first detection moving northwards in the spring following the year of tag deployment.", fig.align='left', fig.width=8, fig.height=5}
+
+springDepDates$Month_Day <- format(as.Date(springDepDates$ts), "%m-%d") # creates a string
+springDepDates$Month_Day <- as.Date(springDepDates$Month_Day, "%m-%d")
+
+ggplot(springDepDates) +
+  geom_point(aes(x = Month_Day, y = as.factor(year(ts)), fill = as.factor(speciesEN)), colour = "black", shape = 21, size = 4) +
+  theme_classic() +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e")) +
+  theme(text = element_text(size = 14)) +
+  labs(x = "Date of first spring detection", y = "Year", fill = "Species")
+
+```
+
+# Migration pace
+
+## Fall migration pace
+
+This is a measurement of the average number of kilometers per day traveled by each individual between their departure location and their furthest south detection. 
+
+```{r fall migration pace calculation, echo = FALSE, warning = FALSE, message = FALSE}
+
+migBirds2 <- df.alltags.912.clean |>
+  filter(distFromTagSiteKM > 200)
+
+migPaceDets <- df.alltags.912.clean |>
+  mutate(ordinalDate = yday(ts)) |>
+  filter(!is.na(depDate100km) & ts >= depDate100km & year == tagDepYear & motusTagID %in% migBirds2$motusTagID) |>
+  group_by(motusTagID, recvDeployName) |>
+  filter(sig == max(sig)) # some birds have multiple detections with the same signal strength at an individual receiver
+
+# now selecting just the departure date and southernmost point (for birds that have them)
+migPaceDets2 <- migPaceDets |>
+  group_by(motusTagID) |>
+  arrange(ts) |>
+  filter(ts == depDate100km | recvDeployLat == min(recvDeployLat)) |>
+  select(motusTagID, speciesEN, tagDepYear, ts, recvDeployName, recvDeployLat, recvDeployLon, sig)
+
+migPaceDets2 <- migPaceDets2 |>
+  ungroup() |>
+  arrange(motusTagID, ts) 
+
+migPace1 <- migPaceDets2 |>
+  mutate(timeDiff = if_else((motusTagID == lag(motusTagID) & recvDeployName != lag(recvDeployName )),
+                               difftime(ts, lag(ts), units = "days"),
+                               NA),
+            totalDistM = if_else((motusTagID == lag(motusTagID) & recvDeployName != lag(recvDeployName)),
+                                                 c(NA, distVincentyEllipsoid(migPaceDets2[,c("recvDeployLon", "recvDeployLat")])),
+                                                 NA_real_),
+            totalDistKM = totalDistM/1000,
+            pace = totalDistKM/as.numeric(timeDiff)) |>
+  filter(is.na(pace) == FALSE)
+
+```
+
+```{r fall migration pace plot, echo = FALSE, warning = FALSE, message = FALSE, fig.cap="Figure 6. Fall migration pace (km/day) of GBMP birds tagged in 2022, 2023 and 2024.", fig.align='left', fig.width=9, fig.height=4}
+
+ggplot(filter(migPace1, pace < 500)) +
+  geom_point(aes(x = pace, y = as.factor(speciesEN), fill = as.factor(speciesEN), shape = as.factor(year(ts))), colour = "black", size = 4, position = position_jitter(height = 0.1, width = 0.1), alpha = 0.7) +
+  theme_classic() +
+  theme(text = element_text(size = 14)) +
+  labs(x = "Migration pace (km/day)", y = "Species", shape = "Year") +
+  scale_colour_viridis_d() +
+  scale_shape_manual(values = c(21, 22, 24)) +
+  guides(fill = "none") +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e"))
+
+```
+
+Table 5. Average, maximum and minimum migration pace values (km/day) for GBMP tagged birds, by species.
+```{r migration pace table, echo = FALSE, warning = FALSE, message = FALSE}
+
+paceTable <- migPace1 |>
+  filter(pace < 500) |>
+  group_by(speciesEN) |>
+  summarize(nTags = n_distinct(motusTagID),
+            maxPace = max(pace),
+            minPace = min(pace),
+            avgPace = mean(pace)) |>
+  mutate(across(where(is.numeric), ~ round(., 0)))
+
+kable(paceTable,
+      format = "html",
+      table.attr = "style='width:80%;'",
+      col.names = c("Species", "Number of birds with pace values", "Highest pace (km/day)", "Lowest pace (km/day)", "Average pace (km/day)")
+) %>% 
+  kable_styling(position='left') 
+
+```
+
+## Spring migration pace
+
+```{r spring mig pace calculations, echo = FALSE, warning = FALSE, message = FALSE}
+
+springArrivals <- df.alltags.912.clean |>
+  filter(year == (tagDepYear + 1) & distFromTagSiteKM <= 100) |>
+  group_by(motusTagID) |>
+  arrange(ts) |>
+  slice_head(n = 1) |>
+  select(speciesEN, bandingCode, ts, recvDeployName, recvDeployLat, distFromTagSiteKM, tagDepYear) |>
+  arrange(speciesEN, recvDeployLat) 
+
+springArrivals$Month_Day <- format(as.Date(springArrivals$ts), "%m-%d") # creates a string
+springArrivals$Month_Day <- as.Date(springArrivals$Month_Day, "%m-%d")
+
+springArrivalDates <- springArrivals |>
+  select(motusTagID, ts) |>
+  rename(springArrivalDate = ts)
+
+springMigPaceDets <- df.alltags.912.clean |>
+  filter(year == (tagDepYear + 1))
+   
+
+springMigPaceDets <- springMigPaceDets |>
+  left_join(springArrivalDates, by = "motusTagID") |>
+  filter(is.na(springArrivalDate) == FALSE) |>
+  group_by(motusTagID, recvDeployName) |>
+  filter(sig == max(sig) | ts == springArrivalDate) |>
+  select(motusTagID, speciesEN, tagDepYear, ts, recvDeployName, recvDeployLat, recvDeployLon, sig, springArrivalDate)
+
+springMigPaceDets2 <- springMigPaceDets |>
+  group_by(motusTagID) |>
+  arrange(ts) |>
+  filter(recvDeployLat == min(recvDeployLat) | ts == springArrivalDate) |>
+  select(motusTagID, speciesEN, tagDepYear, ts, recvDeployName, recvDeployLat, recvDeployLon, sig, springArrivalDate)
+
+springMigPaceDets2 <- springMigPaceDets2 |>
+  ungroup() |>
+  arrange(motusTagID, ts)
+
+springMigPace1 <- springMigPaceDets2 |>
+  mutate(timeDiff = if_else((motusTagID == lag(motusTagID) & recvDeployName != lag(recvDeployName )),
+                            difftime(ts, lag(ts), units = "days"),
+                            NA),
+         totalDistM = if_else((motusTagID == lag(motusTagID) & recvDeployName != lag(recvDeployName)),
+                              c(NA, distVincentyEllipsoid(springMigPaceDets2[,c("recvDeployLon", "recvDeployLat")])),
+                              NA_real_),
+         totalDistKM = totalDistM/1000,
+         pace = totalDistKM/as.numeric(timeDiff)) |>
+  filter(is.na(pace) == FALSE)
+
+```
+
+
+```{r spring mig pace plot, echo = FALSE, warning = FALSE, message = FALSE, fig.cap="Figure 7. Spring migration pace (km/day) of GBMP birds tagged in 2022 and 2023. Note that year refers to the spring following the year of tag deployment, thus there are no pace values for birds tagged in 2024 because they have not migrated back to the breeding grounds yet.", fig.align='left', fig.width=9, fig.height=4}
+
+ggplot(filter(springMigPace1, pace < 500)) +
+  geom_point(aes(x = pace, y = as.factor(speciesEN), fill = as.factor(speciesEN), shape = as.factor(year(ts))), colour = "black", size = 4, position = position_jitter(height = 0.1, width = 0.1), alpha = 0.7) +
+  theme_classic() +
+  theme(text = element_text(size = 14)) +
+  labs(x = "Migration pace (km/day)", y = "Species", shape = "Year") +
+  scale_shape_manual(values = c(21, 22, 24)) +
+  guides(fill = "none") +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e"))
+
+```
+# Spring arrival dates
+
+Fifteen of the birds tagged in 2022 and 2023 were detected returning to the breeding grounds in 2023 and 2024, respectively.
+
+```{r spring arrival date plot, echo = FALSE, warning = FALSE, message = FALSE, fig.cap="Figure 8. Spring arrival dates, calculated as the first detection within 100km of the tagging location in the spring following the year of tag deployment.", fig.align='left', fig.width=8, fig.height=5}
+
+springArrivals$Month_Day <- format(as.Date(springArrivals$ts), "%m-%d") # creates a string
+springArrivals$Month_Day <- as.Date(springArrivals$Month_Day, "%m-%d")
+
+ggplot(springArrivals) +
+  geom_point(aes(x = Month_Day, y = as.factor(year(ts)), fill = as.factor(speciesEN)), colour = "black", shape = 21, size = 4) +
+  theme_classic() +
+  theme(text = element_text(size = 14)) +
+  labs(x = "Spring breeding ground arrival date", y = "Year", fill = "Species") +
+  scale_fill_manual(values = c("Sprague's Pipit" = "#35b779", "Horned Lark" = "#21918c", "Chestnut-collared Longspur" = "#443983", "Baird's Sparrow" = "#440154", "Thick-billed Longspur" = "#90d743", "Grasshopper Sparrow" = "#31688e"))
+
+
+```
+
+# Migration paths
+
+The maps below show the apparent migration paths (fall and spring, for birds with detections in both seasons) for tagged GBMP birds. 
+
+Most tagged birds seemed to head slightly east and then south, regardless of species or tagging location.
+
+```{r migration paths by species, fig.cap="Figure 9. Apparent migration paths for the six GBMP grassland songbird species, as observed from Motus automated radio telemetry detections in 2022, 2023 and 2024. Purple shaded areas represent eBird nonbreeding ranges for each species.", echo = FALSE, message = FALSE, warning = FALSE, results = 'hide', fig.path = "figures/", fig.align='left', fig.width=10, fig.height=6}
+
+states_CanUS <- ne_states(country = c("canada", "united states of america"), returnclass = "sf")
+
+# loading eBird vector data for winter ranges of each species
+CCLO_range <- st_read("chclon_range_2022/chclon_range_2022.gpkg")
+CCLO_winter_range <- CCLO_range |>
+  filter(season == "nonbreeding")
+
+SPPI_range <- st_read("sprpip_range_2022/sprpip_range_2022.gpkg")
+SPPI_winter_range <- SPPI_range |>
+  filter(season == "nonbreeding")
+
+BAIS_range <- st_read("baispa_range_2022/baispa_range_2022.gpkg")
+BAIS_winter_range <- BAIS_range |>
+  filter(season == "nonbreeding")
+
+HOLA_range <- st_read("horlar_range_2022/horlar_range_2022.gpkg")
+HOLA_winter_range <- HOLA_range |>
+  filter(season == "nonbreeding")
+
+TBLO_range <- st_read("mcclon_range_2022/mcclon_range_2022.gpkg")
+TBLO_winter_range <- TBLO_range |>
+  filter(season == "nonbreeding")
+
+GRSP_range <- st_read("graspa_range_2022/graspa_range_2022.gpkg")
+GRSP_winter_range <- GRSP_range |>
+  filter(season == "nonbreeding")
+
+allWinterRanges <- CCLO_winter_range |>
+  bind_rows(SPPI_winter_range, BAIS_winter_range, HOLA_winter_range, TBLO_winter_range, GRSP_winter_range) |>
+  rename(speciesEN = common_name)
+  
+fun.getpath <- function(df) {
+  df %>%
+    filter(!is.na(recvDeployLat) | !(recvDeployLat == 0)) %>% 
+    group_by(motusTagID, mfgID, runID, recvDeployName, ambigID, 
+             tagDepLon, tagDepLat, recvDeployLat, recvDeployLon, speciesEN, year) %>%
+    summarize(max.runLen = max(runLen), time = mean(ts), .groups = "drop") %>%
+    arrange(motusTagID, time) %>%
+    data.frame()
+}
+
+path912 <- fun.getpath(df.alltags.912.clean)
+
+tagDepYears <- tags912 |>
+  select(motusTagID, utcYearStart) |>
+  rename(tagDepYear = utcYearStart) |>
+  filter(is.na(tagDepYear) == FALSE)
+
+path912 <- path912 |>
+  left_join(tagDepYears, by = "motusTagID")
+
+colnames(path912)
+
+first_receivers <- path912 %>%
+  group_by(motusTagID) %>%
+  slice(1) %>%
+  ungroup()
+
+path912$tagSite <- "Tag Site"
+activeRecv$recvType <- "Active Receivers"
+allWinterRanges$Season <- "Nonbreeding Season Range"
+path912$recvWithDets <- "Receiver With Detections"
+path912$lineType <- "Apparent Migration Route"
+first_receivers$lineType <- "Apparent Migration Route"
+path912 <- path912 |>
+  mutate(migrationSeason = case_when(
+    as.numeric(year(time)) == tagDepYear ~ "Apparent Fall Migration Route",
+    as.numeric(year(time)) == (tagDepYear + 1) ~ "Apparent Spring Migration Route",
+    TRUE ~ "NA"
+  ))
+
+xmin <- min(path912$recvDeployLon, na.rm = TRUE) - 2
+xmax <- max(path912$recvDeployLon, na.rm = TRUE) + 10
+ymin <- min(path912$recvDeployLat, na.rm = TRUE) - 1
+ymax <- max(path912$recvDeployLat, na.rm = TRUE) + 1
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = allWinterRanges, aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "") +
+  geom_path(data = filter(path912, is.na(speciesEN) == FALSE), 
+            aes(x = recvDeployLon, y = recvDeployLat, 
+                colour = as.factor(speciesEN), group = motusTagID), show.legend = FALSE) +
+  geom_segment(data = first_receivers, aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat, colour = speciesEN), show.legend = FALSE) +
+  geom_point(data = filter(path912, is.na(speciesEN) == FALSE ), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, is.na(speciesEN) == FALSE), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  facet_wrap(~speciesEN) +
+  # Manual color scales for different layers
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+  scale_colour_manual(values = c("Baird's Sparrow" = "#440154", "Chestnut-collared Longspur" = "#443983", "Grasshopper Sparrow" = "#31688e", "Horned Lark" = "#21918c", "Sprague's Pipit" = "#35b779", "Thick-billed Longspur" = "#90d743")) +
+  
+  # Create a combined, unified legend using guides()
+  guides(
+    fill = guide_legend(order = 2, title = "Legend", ncol = 1))
+```
+
+## Chestnut-collared Longspur
+
+Two Chestnut-collared Longspur were detected in New Mexico, which is within the known wintering range of the species (Bleho et al. 2020). Note that CCLO-67387 was detected back on the breeding grounds in the spring, however it had no other spring detections so the tracks do not show up on the map below. The coloured area on the map represents the eBird CCLO non-breeding range.
+
+```{r CCLO individual maps, echo = FALSE, message = FALSE, warning = FALSE, fig.show = "hold", results = 'hide', fig.width=10, fig.height=5, fig.align='left', fig.cap="Figure 10. Apparent migration paths for two Chestnut-collared Longspurs that were detected in probable overwintering locations."}
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Chestnut-collared Longspur"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "CCLO-85818") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 85818), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#443983") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 85818), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#443983") +
+ geom_segment(data = filter(first_receivers, motusTagID == 85818), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#443983") +
+  geom_point(data = filter(path912, motusTagID == 85818), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 85818), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(breaks = c(-110, -100, -90, -80)) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Chestnut-collared Longspur"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "CCLO-67387") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 67387), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#443983") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 67387), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#443983") +
+ geom_segment(data = filter(first_receivers, motusTagID == 67387), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#443983") +
+  geom_point(data = filter(path912, motusTagID == 67387), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 67387), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+    
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+```
+
+## Horned Lark
+
+Only three of 15 detected Horned Larks had migratory detections. The year-round range for Horned Lark includes most of the USA (Beason et al. 2020), so the last detections for our three tagged birds may be in plausible overwintering locations. The coloured area on the map represents the eBird HOLA non-breeding range.
+
+```{r HOLA individual maps, echo = FALSE, message = FALSE, warning = FALSE, fig.show = "hold", results = 'hide', fig.width=8, fig.height=4, fig.align='left', fig.cap="Figure 11. Apparent migration paths for two Horned Larks."}
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Horned Lark"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "HOLA-75828") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 75828), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#21918c") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 75828), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#21918c") +
+ geom_segment(data = filter(first_receivers, motusTagID == 75828), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#21918c") +
+  geom_point(data = filter(path912, motusTagID == 75828), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 75828), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+    
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Horned Lark"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "HOLA-75830") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 75830), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#21918c") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 75830), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#21918c") +
+ geom_segment(data = filter(first_receivers, motusTagID == 75830), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#21918c") +
+  geom_point(data = filter(path912, motusTagID == 75830), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 75830), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+    
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+```
+
+## Sprague\'s Pipit
+
+One Sprague's Pipit was detected in Texas and another one was detected in northern Mexico, both of which are within the known wintering range of the species (Davis et al. 2020). Migration tracks for many tagged pipits ended in Kansas or Oklahoma, which seems like an unlikely endpoint considering that it is north of known wintering areas and eBird detections for Sprague's Pipit are minimal in those areas during winter months (Fink et al. 2023). The coloured area on the map represents the eBird SPPI non-breeding range.
+
+```{r SPPI individual maps, echo = FALSE, message = FALSE, warning = FALSE, fig.show = "hold", results = 'hide', fig.width=8, fig.height=4, fig.align='left', fig.cap="Figure 12. Apparent migration paths for four Sprague's Pipits that were detected in probable overwintering locations. Solid lines represent fall migratory movements and dashed lines represent spring migratory movements."}
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Sprague's Pipit"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "SPPI-61024") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 61024), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 61024), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+ geom_segment(data = filter(first_receivers, motusTagID == 61024), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#35b779") +
+  geom_point(data = filter(path912, motusTagID == 61024), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 61024), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+    
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Sprague's Pipit"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "SPPI-75413") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 75413), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 75413), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+ geom_segment(data = filter(first_receivers, motusTagID == 75413), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#35b779") +
+  geom_point(data = filter(path912, motusTagID == 75413), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 75413), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+    
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Sprague's Pipit"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "SPPI-61020") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 61020), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 61020), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+ geom_segment(data = filter(first_receivers, motusTagID == 61020), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#35b779") +
+  geom_point(data = filter(path912, motusTagID == 61020), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 61020), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+    
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+
+ggplot(data = world) + 
+  geom_sf(colour = "black") +
+  geom_sf(data = filter(allWinterRanges, speciesEN == "Sprague's Pipit"), aes(fill = as.factor(Season)), color = NA, alpha = 0.3) + 
+  geom_sf(data = lakes, colour = NA, fill = "white") +
+  geom_sf(data = states_CanUS, colour = "black", fill = NA) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax), expand = FALSE) +
+  theme_bw() + 
+  labs(x = "", y = "", title = "SPPI-75837") +
+    geom_point(data = activeRecv, aes(x = recvDeployLon, y = recvDeployLat, colour = as.factor(recvType)), shape = 1) +
+  geom_path(data = filter(path912, as.numeric(year(time)) == tagDepYear & motusTagID == 75837), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+    geom_path(data = filter(path912, as.numeric(year(time)) == (tagDepYear + 1) & motusTagID == 75837), 
+              aes(x = recvDeployLon, y = recvDeployLat, group = motusTagID, linetype = as.factor(migrationSeason)), size = 1, colour = "#35b779") +
+ geom_segment(data = filter(first_receivers, motusTagID == 75837), aes(x = tagDepLon, y = tagDepLat, xend = recvDeployLon, yend = recvDeployLat), show.legend = FALSE, size = 1, colour = "#35b779") +
+  geom_point(data = filter(path912, motusTagID == 75837), aes(x = recvDeployLon, y = recvDeployLat, fill = as.factor(recvWithDets)), shape = 21) + # plotting receivers
+  geom_point(data = filter(path912, motusTagID == 75837), # plotting tag deployment sites
+             aes(x = tagDepLon, y = tagDepLat, fill = as.factor(tagSite)), colour = "black", shape = 23, size = 2) +
+  scale_x_continuous(
+    breaks = c(-110, -100, -90, -80)
+  ) +
+  geom_text(data = filter(states_CanUS, postal %in% c("MT", "ND", "WY", "SD", "NE", "KS", "OK", "NM", "TX", "CO", "WY", "FL", "ID", "UT", "AZ")), aes(x = longitude, y = latitude, label = postal)) +
+      geom_text(data = filter(states_CanUS, postal %in% c("AB", "SK", "MB")), aes(label = postal), y = 51, x = c(-112.5, -105, -97.5)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+  scale_fill_manual(values = c("Nonbreeding Season Range" = "purple4", "Tag Site" = "red", "Receiver With Detections" = "black")) +
+    scale_colour_manual(values = c("Active Receivers" = "gray45")) +
+    scale_linetype_manual(values = c("Apparent Fall Migration Route" = "solid", "Apparent Spring Migration Route" = "dotdash")) +
+    
+    # Create a combined, unified legend using guides()
+    guides(
+      color = guide_legend(order = 1, title = "Legend", ncol = 1),
+      fill = guide_legend(order = 2, title = NULL, ncol = 1),
+      shape = guide_legend(order = 3, ncol = 1),
+      linetype = guide_legend(order = 4, title = NULL, ncol = 1)
+    ) +  # This ensures that shapes are displayed in the legend
+    theme(legend.spacing.y = unit(0, "cm"))
+
+
+```
+
+# References
+
+Beason, R. C. (2020). Horned Lark (Eremophila alpestris), version 1.0. In Birds of the World (S. M. Billerman, Editor). Cornell Lab of Ornithology, Ithaca, NY, USA. https://doi-org.proxy.library.carleton.ca/10.2173/bow.horlar.01
+
+Bleho, B., K. Ellison, D. P. Hill, and L. K. Gould (2020). Chestnut-collared Longspur (Calcarius ornatus), version 1.0. In Birds of the World (P. G. Rodewald, Editor). Cornell Lab of Ornithology, Ithaca, NY, USA. https://doi-org.proxy.library.carleton.ca/10.2173/bow.chclon.01
+
+Davis, S. K., M. B. Robbins, and B. C. Dale (2020). Sprague's Pipit (Anthus spragueii), version 1.0. In Birds of the World (A. F. Poole, Editor). Cornell Lab of Ornithology, Ithaca, NY, USA. https://doi-org.proxy.library.carleton.ca/10.2173/bow.sprpip.01
+
+Ellison, K., E. McKinnon, S. Zack, S. Olimb, R. Sparks, and E. Strasser (2017). Migration and winter distribution of the Chestnut-collared Longspur. Animal Migration (4): 37-40. https://doi.org/10.1515/ami-2017-0005 
+
+Fink, D., T. Auer, A. Johnston, M. Strimas-Mackey, S. Ligocki, O. Robinson, W. Hochachka, L. Jaromczyk, C. Crowley, K. Dunham, A. Stillman, I. Davies, A. Rodewald, V. Ruiz-Gutierrez, C. Wood. 2023. eBird Status and Trends, Data Version: 2022; Released: 2023. Cornell Lab of Ornithology, Ithaca, New York. https://doi.org/10.2173/ebirdst.2022
+
