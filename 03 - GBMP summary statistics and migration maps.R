@@ -20,12 +20,13 @@ library(sf)
 Sys.setenv(tz = "UTC")
 
 # turning off scientific notation
-
 options(scipen = 9999)
 
 #### 2 - load data ####
-
 df.alltags.912.clean <- readRDS("df.alltags.912.clean.2025Feb11.rds")
+
+# note that you can download the files from OSF using R - but it just downloads it into your working directory for you, whereas you could just go to the OSF page and download all the relevant files without going through the steps here
+# if you want to do it through R, I included code in scripts 1&2 for how to do that. It takes more space in the scripts and I didn't find it saved time or effort so I didn't include that code in scripts 3&4
 
 #### 3 - number of detections by year and species ####
 
@@ -38,6 +39,7 @@ df.alltags.912.clean <- df.alltags.912.clean |>
 hist(df.alltags.912.clean$numDaysDetected)
 # 0 to 500 days
 
+# summarizing detections by species and year
 detections_by_Species_Year <- df.alltags.912.clean |>
   ungroup() |>
   group_by(tagDepYear, speciesEN) |>
@@ -106,13 +108,13 @@ allRecv$dtStart <- as.POSIXct(allRecv$dtStart)
 allRecv$dtEnd <- as.POSIXct(allRecv$dtEnd)
 
 # Step 1: Filter active receivers at the time of each tag deployment
-# A function to check if a receiver was active at the time of tag deployment
 
 allRecv <- allRecv |>
   rename(recvDeployName = deploymentName,
          recvDeployLat = latitude,
          recvDeployLon = longitude)
-  
+
+# A function to check if a receiver was active at the time of tag deployment
 get_active_receivers <- function(tagDeployDate) {
   active_receivers <- allRecv %>% # have to have recvDeployName in there, it's not in allRecv
     filter(dtStart <= tagDeployDate & (dtEnd >= tagDeployDate | is.na(dtEnd))) %>% # recv that are still active have an NA for their end date!
@@ -272,7 +274,6 @@ detections_by_tagModel <- df.alltags.912.clean |>
 # there are 4 types of tags in the data but only 3 in the banding sheet - HybridTag and LifeTag just say CTT solar. it shows on the motus site but for some reason not in the MotusTagTemplate912 that can be downloaded...
 
 # I downloaded a different file that has that info
-
 tags <- read_csv("tags.csv")
 
 tagModels <- tags |>
@@ -303,6 +304,7 @@ detections_by_tagModel <- depTagModels |>
 # there are both fall and spring migration detections in these data, so those will need to be separate departure dates
 
 # fall departure dates ####
+
 df.alltags.912.clean <- df.alltags.912.clean |> 
   ungroup() |>
   mutate(distFromTagSiteM = distVincentyEllipsoid(df.alltags.912.clean[,c("recvDeployLon", "recvDeployLat")],
@@ -310,6 +312,7 @@ df.alltags.912.clean <- df.alltags.912.clean |>
          distFromTagSiteKM = distFromTagSiteM/1000)
 
 # fall migration would be same calendar year as the deployment, and obviously starting from where the bird was tagged (or nearby)
+# actually, some birds (eg. 75838-HOLA) had fall departures the following year too - I will look at those later on
 
 # Ellison et al. 2017 found that CCLO tagged with geolocators moved up to ~120 km post-breeding but pre-migration. I think the error on geolocators can be up to ~100km...but that seems to match roughly with the detections that I see anyways 
 # I have not seen any similar data for the other species so I'm going to look at 100km, 150km and 200km for all species - I also tried 50km before (what I used for BANS) and got almost the exact same results for departure dates
@@ -361,7 +364,7 @@ allDepDates <- deps200 |>
   left_join(deps150, by = "motusTagID") |>
   left_join(deps100, by = "motusTagID") |>
   select(motusTagID, speciesEN, depDate100km, depDate150km, depDate200km) |>
-  arrange(speciesEN, depDate150km)
+  arrange(speciesEN, depDate100km)
 
 # CCLO - Ellison et al. 2017 earliest departure (from SK) was 30 Sept, Birds of the World says fall migration starts around mid-Sept to early-Oct
 # according to Birds of the World, SPPI fall migration starts in September in the prairies
@@ -491,7 +494,51 @@ for(i in 1:nrow(regional)){
 # same with 75836 at nashlyn, only at battlecreek in october. but all looks good.
 # and 67390-CCLO at Ellice Archie
 
-# plotting fall departure dates 
+# fall departures the following year
+fallDepDates100km_nextYear <- df.alltags.912.clean |>
+  filter(distFromTagSiteKM <= 100 & year == as.numeric(tagDepYear + 1) & numDaysDetected > 1) |>
+  group_by(motusTagID, speciesEN, tagDepYear, tagDepLat, tagDepLon, numDaysDetected) |>
+  summarize(depDate100km = max(ts)) |>
+  arrange(speciesEN, tagDepYear)
+
+deps100_nextYear <- fallDepDates100km_nextYear |>
+  ungroup()|>
+  select(motusTagID, depDate100km) |>
+  rename(depDate100km_nextYear = depDate100km)
+
+allDepDates <- allDepDates |>
+  left_join(deps100_nextYear, by = "motusTagID")
+
+df.alltags.912.clean <- df.alltags.912.clean |>
+  left_join(deps100_nextYear, by = "motusTagID")
+
+# going to look at departures along with the next detection for each individual that has migratory detections
+df_sorted <- df.alltags.912.clean %>%
+  filter(!is.na(depDate100km_nextYear) & ts >= depDate100km_nextYear) |>
+  arrange(motusTagID, recvDeployName, ts)
+
+# pulling just the first post-departure detection
+df_next_detection <- df_sorted |>
+  filter(ts > depDate100km_nextYear) |>
+  group_by(motusTagID) |>
+  arrange(ts) |>
+  slice_head(n = 1)
+# ok none of them have any further detections
+
+# and just the departures themselves
+df_deps <- df_sorted |>
+  filter(ts == depDate100km_nextYear)
+
+# binding together
+df_deps_next_det <- df_deps |>
+  bind_rows(df_next_detection) |>
+  select(motusTagID, speciesEN, ts, depDate100km_nextYear, recvDeployName, recvDeployLat, distBtwRecvKM, timeD, numDaysDetected, tagDepYear) |>
+  mutate(depMonth100_nextYear = month(depDate100km_nextYear))|>
+  arrange(speciesEN, motusTagID, depDate100km_nextYear, ts)
+# none of the birds have a next detection
+# only 75836 and 75838 HOLA are likely to be actual departure dates, the rest are all in July or earlier
+
+# plotting fall departure dates (same year as tag deployments) ####
 
 # creating a month-day column just for plotting
 newDepDates$Month_Day100 <- format(as.Date(newDepDates$depDate100km), "%m-%d")
@@ -518,8 +565,6 @@ ggplot() +
         legend.box = "horizontal",  # Ensure the items are in a horizontal box
         legend.box.margin = margin(t = 10)) +  # Optional: space above the legend +
   theme(text = element_text(size = 16))
-
-saveRDS(newDepDates, "departureDates.2025Feb24.rds")
 
 # spring departure dates ####
 
@@ -563,6 +608,7 @@ ggplot(springDepDates) +
   labs(x = "Date of first spring detection", y = "Year", fill = "Species")
 
 #### 7 - Spring arrival dates ####
+# this is the first detection within 100km of the tagging location in the year following tag deployment
 
 springArrivals <- df.alltags.912.clean |>
   filter(year == (tagDepYear + 1) & distFromTagSiteKM <= 100) |>
@@ -632,8 +678,7 @@ migPace1 <- migPaceDets2 |>
 
 # 85822-CCLO has the highest pace by far - most are 200km/day or under, this one is over 1000km/day because it traveled 500km in a half day
 
-# fall migration pace plot/table
-
+# fall migration pace plot/table - note that I've slightly improved on these for the R markdown report
 migPace1 |>
   group_by(speciesEN, tagDepYear) |>
   summarize(nTags = n_distinct(motusTagID))
@@ -657,13 +702,15 @@ paceTable <- migPace1 |>
             avgPace = mean(pace))
 
 ## spring migration pace ####
-
+# calculating average pace between arrival on breeding grounds and the first spring migration detection
 springArrivalDates <- springArrivals |>
   select(motusTagID, ts) |>
   rename(springArrivalDate = ts)
 
 springMigPaceDets <- df.alltags.912.clean |>
   filter(year == (tagDepYear + 1))
+
+colnames(springMigPaceDets)
    
 springMigPaceDets <- springMigPaceDets |>
   left_join(springArrivalDates, by = "motusTagID") |>
@@ -681,7 +728,6 @@ springMigPaceDets2 <- springMigPaceDets |>
   filter(recvDeployLat == min(recvDeployLat) | ts == springArrivalDate) |> # each bird should have two points here, their lowest latitude point and their arrival point back on the breeding grounds
   select(motusTagID, speciesEN, tagDepYear, ts, recvDeployName, recvDeployLat, recvDeployLon, sig, springArrivalDate)
 
-table(springMigPaceDets2$motusTagID)
 # 75837 somehow has 36, 75836 has three
 # the recv names are all the same though, so my code below won't use those to calculate pace
 # I think maybe because the bird was only detected on the breeding grounds, so the min recvDeployLat pulls all of those hits
@@ -747,7 +793,6 @@ allWinterRanges <- CCLO_winter_range |>
   bind_rows(SPPI_winter_range, BAIS_winter_range, HOLA_winter_range, TBLO_winter_range, GRSP_winter_range) |>
   rename(speciesEN = common_name)
 
-
 # loading basemap layers
 world <- ne_countries(scale = "medium", returnclass = "sf")
 
@@ -773,8 +818,6 @@ fun.getpath <- function(df) {
 
 # generating the path data
 path912 <- fun.getpath(df.alltags.912.clean)
-
-tags912 <- read_csv("MotusTagsTemplate-912.csv")
 
 tagDepYears <- tags912 |>
   rename(motusTagID = tagID) |>
@@ -853,6 +896,7 @@ activeRecv <- allRecv |>
   filter(dtStart <= "2024-12-01 00:00:00 UTC" & (dtEnd >= "2022-06-01 00:00:00 UTC" | is.na(dtEnd)))
 activeRecv$recvType <- "Active Receivers" # for plotting
 
+# note - running this for loop will save a file of each plot in your working directory, you can disable that by # out that line of code (line 947). at the moment, I've created separate files for each species and the maps are saving there, you can modify the code as required
 for(i in 1:length(HOLAtags)){
   
   # filtering the path data for each individual tag
@@ -867,8 +911,6 @@ for(i in 1:length(HOLAtags)){
   ymin <- min(path912$recvDeployLat, na.rm = TRUE) - 1
   ymax <- max(path912$recvDeployLat, na.rm = TRUE) + 1
   # get a warning about fractional recycling, which doesn't matter in this instance - it's doing what I want it to
-  
-  
   
     p <- ggplot(data = world) + 
       geom_sf(colour = "black") +
@@ -910,7 +952,6 @@ for(i in 1:length(HOLAtags)){
   readline(prompt = 'Press return/enter to continue')}
 
 # HOLA tags to print on the markdown report: 75828, 75830, 85084?
-
 df.75828 <- HOLA |>
   filter(motusTagID == 75828)
 
@@ -930,6 +971,7 @@ path912 <- path912 |>
     TRUE ~ "NA"
   ))
 
+# as with the HOLA code, this for loop will save a copy of each map in a folder I created in my working directory. edit line 1027 to change that
 for(i in 1:length(SPPItags)){
   
   # filtering the path data for each individual tag
@@ -944,8 +986,6 @@ for(i in 1:length(SPPItags)){
   ymin <- min(path912$recvDeployLat, na.rm = TRUE) - 1
   ymax <- max(path912$recvDeployLat, na.rm = TRUE) + 1
   # get a warning about fractional recycling, which doesn't matter in this instance - it's doing what I want it to
-  
-  
   
   p <- ggplot(data = world) + 
     geom_sf(colour = "black") +
@@ -1024,6 +1064,7 @@ CCLO <- df.alltags.912.clean |>
 
 CCLOtags <- unique(CCLO$motusTagID) # 61
 
+# this for loop will save a copy of each map in a folder I created in my working directory. edit line 1120 to change that
 for(i in 1:length(CCLOtags)){
   
   # filtering the path data for each individual tag
@@ -1104,6 +1145,7 @@ BAIS <- df.alltags.912.clean |>
 
 BAIStags <- unique(BAIS$motusTagID) # 61
 
+# this for loop will save a copy of each map in a folder I created in my working directory. edit line 1201 to change that
 for(i in 1:length(BAIStags)){
   
   # filtering the path data for each individual tag
@@ -1170,6 +1212,7 @@ GRSP <- df.alltags.912.clean |>
 
 GRSPtags <- unique(GRSP$motusTagID) # 61
 
+# this for loop will save a copy of each map in a folder I created in my working directory. edit line 1268 to change that
 for(i in 1:length(GRSPtags)){
   
   # filtering the path data for each individual tag
@@ -1237,6 +1280,7 @@ TBLO <- df.alltags.912.clean |>
 
 TBLOtags <- unique(TBLO$motusTagID) # 61
 
+# this for loop will save a copy of each map in a folder I created in my working directory. edit line 1336 to change that
 for(i in 1:length(TBLOtags)){
   
   # filtering the path data for each individual tag
@@ -1311,12 +1355,14 @@ winterLocs <- df.alltags.912.clean |>
 
 #### 12 - Saving files ####
 
-saveRDS(df.alltags.912.clean, "df.alltags.912.clean.depDates.2025Feb25.rds")
-saveRDS(allDepDates, "allDepDates.2025Feb25.rds")
+# change dates in file names as desired
+saveRDS(df.alltags.912.clean, "df.alltags.912.clean.depDates.2025Mar25.rds")
+saveRDS(allDepDates, "allDepDates.2025Mar25.rds")
 saveRDS(migPace1, "fallMigPaceData.2025Feb25.rds")
 saveRDS(springDepDates, "springDepDates.2025Feb25.rds")
 saveRDS(springArrivals, "springArrivalDates.2025Feb25.rds")
 saveRDS(springMigPace1, "springMigPace.2025Feb25.rds")
+saveRDS(closest_receivers, "closestRecv.2025Mar6.rds")
 
 #### 13 - References ####
 
